@@ -1,0 +1,12 @@
+langchain
+langchain-community
+langgraph
+ollama
+sentence-transformers
+chromadb
+pypdf
+tiktoken
+chainlit
+python-dotenv
+fastembed
+openai
