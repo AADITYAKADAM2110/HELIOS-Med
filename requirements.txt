@@ -12,3 +12,5 @@ chainlit
 python-dotenv
 fastembed
 openai
+langchain-chroma
+langchain-ollama
