@@ -1,5 +1,7 @@
-from typing import List, TypedDict
+from typing import List, TypedDict, Any
+from urllib import response
 
+from click import prompt
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
@@ -10,124 +12,178 @@ class Config:
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     CHROMA_DIR = "./chroma_db"
     LLM_MODEL = "qwen2.5:3b"
-    CHUNK_K = 3
+    CHUNK_K = 6
+
 
 class HELIOSState(TypedDict, total=False):
     question: str
     generation: str
-    documents: List[any]
+    documents: List[Any]
     is_relevant: bool
     sources: str
+    iteration: int
+    trace: str
 
 
 class HELIOSEngine:
-    def __init__(self):
-        self.embeddings = HuggingFaceEmbeddings(model=Config.EMBEDDING_MODEL)
-        self.db = Chroma(embedding_function=self.embeddings, persist_directory=Config.CHROMA_DIR)
-        self.llm = OllamaLLM(model=Config.LLM_MODEL, temperature=0)
 
+    def __init__(self):
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=Config.EMBEDDING_MODEL
+        )
+
+        self.db = Chroma(
+            embedding_function=self.embeddings,
+            persist_directory=Config.CHROMA_DIR
+        )
+
+        self.llm = OllamaLLM(
+            model=Config.LLM_MODEL,
+            temperature=0
+        )
+
+    # -------------------------
+    # RETRIEVAL
+    # -------------------------
 
     def retrieve(self, state: HELIOSState) -> HELIOSState:
-        """Retrieves relevant documents from the Chroma database based on the question in the state.
-        """
-        print(f"---RETRIEVING DOCUMENTS FOR QUESTION: {state['question']}---")
+
         question = state["question"]
-        documents = self.db.similarity_search(question, k=Config.CHUNK_K)
+        iteration = state.get("iteration", 1)
+
+        print(f"--- RETRIEVAL ITERATION {iteration} ---")
+
+        docs = self.db.max_marginal_relevance_search(
+            question,
+            k=Config.CHUNK_K,
+            fetch_k=20
+        )
+
         return {
-            "documents": documents
+            "documents": docs,
+            "iteration": iteration,
+            "trace": f"Iteration {iteration}: Retrieved {len(docs)} documents"
         }
 
+    # -------------------------
+    # RELEVANCE CHECK
+    # -------------------------
+
     def grade_relevance(self, state: HELIOSState) -> HELIOSState:
-        """Grades the relevance of the retrieved documents to the question.
 
-        Added debug printing to show what the state contains when this node runs
-        so we can see whether ``sources`` is arriving correctly.
-        """
-        print(f"---GRADING RELEVANCE OF DOCUMENTS---")
-        print("state at grade_relevance: ", state)
-        question = state.get("question")
-        documents = state.get("documents")
-        if not documents:
-            return {"is_relevant": False}
-        # simplistic check, can be replaced with actual scoring logic
-        return {"is_relevant": True}
+        docs = state.get("documents", [])
 
-    def generate_answer(self, state: HELIOSState) -> HELIOSState:
-        """Generates an answer to the question based on the retrieved documents.
+        if not docs:
+            return {
+                "is_relevant": False,
+                "trace": state.get("trace", "") + " → No documents found"
+            }
 
-        We also propagate formatted sources (if available) so the final output
-        includes them despite how the graph merges node outputs.
-        """
-        print(f"---GENERATING ANSWER---")
-        question = state.get("question")
-        documents = state.get("documents", [])
+        return {
+            "is_relevant": True,
+            "trace": state.get("trace", "") + " → Documents validated"
+        }
 
-        generation_prompt = f"Question: {question}\n\nDocuments:\n"
-        for i, doc in enumerate(documents):
-            generation_prompt += f"{i+1}. {doc.page_content}\n"
-        generation_prompt += "\nGenerate a concise answer to the question based on the above documents."
-
-        # OllamaLLM is not callable; use invoke() to generate text
-        generation_response = self.llm.invoke(generation_prompt)
-        result = {"generation": generation_response}
-        # copy sources through explicitly
-        if "sources" in state:
-            result["sources"] = state["sources"]
-        return result
-
+    # -------------------------
+    # FORMAT SOURCES
+    # -------------------------
 
     def format_sources(self, state: HELIOSState) -> HELIOSState:
-        """Formats source information from the documents in the state.
-        Returns a new state field ``sources`` containing the formatted string.
 
-        Added logs so we can verify that this node actually executes and what it produces.
-        """
-        print("---FORMATTING SOURCES---")
-        documents = state.get("documents", [])
-        if not documents:
-            print("No documents found, skipping source formatting.")
+        docs = state.get("documents", [])
+
+        if not docs:
             return {}
 
-        # Extract unique source names and pages
-        seen = set()
-        clean_sources = []
+        sources = []
 
-        for doc in documents:
-            name = doc.metadata.get('source', 'Unknown Doc').split('\\')[-1]  # filename only
-            page = doc.metadata.get('page', 'N/A')
-            entry = f"{name} (Page {page})"
+        for i, doc in enumerate(docs):
 
-            if entry not in seen:
-                clean_sources.append(f"• {entry}")
-                seen.add(entry)
+            name = doc.metadata.get("source", "Unknown").split("\\")[-1]
+            page = doc.metadata.get("page", "N/A")
 
-        formatted = "\n\n   Verified Sources:  \n" + "\n".join(clean_sources)
-        print("Formatted sources:", formatted)
+            sources.append(f"[{i+1}] {name} (Page {page})")
+
+        formatted = "\n".join(sources)
+
         return {"sources": formatted}
 
+    # -------------------------
+    # GENERATE ANSWER
+    # -------------------------
+
+    def generate_answer(self, state: HELIOSState) -> HELIOSState:
+
+        question = state["question"]
+        docs = state.get("documents", [])
+
+        context = ""
+
+        for i, doc in enumerate(docs):
+             context += f"""
+            SOURCE [{i+1}]
+            {doc.page_content}
+            """
+
+        prompt = f"""
+You are a medical research assistant.
+
+Answer the question using ONLY the provided sources.
+
+Rules:
+- Cite sources using numbers like [1], [2], [3]
+- Do not invent information
+- If the answer is not found say:
+"The answer is not found in the retrieved documents."
+
+Question:
+{question}
+
+Sources:
+{context}
+
+Answer with citations.
+"""
+
+        response = self.llm.invoke(prompt)
+
+        return {
+             "generation": response
+     }
+
+
+# -------------------------
+# BUILD GRAPH
+# -------------------------
+
 def build_graph():
+
     engine = HELIOSEngine()
+
     workflow = StateGraph(HELIOSState)
 
-    # use add_sequence for a straightforward linear pipeline
-    workflow.add_sequence([
-        ("retrieve_documents", engine.retrieve),
-        ("format_sources", engine.format_sources),
-        ("grade_relevance", engine.grade_relevance),
-    ])
-    # register generation separately since it's conditional
-    workflow.add_node("generate_answer", engine.generate_answer)
+    workflow.add_node("retrieve", engine.retrieve)
+    workflow.add_node("format_sources", engine.format_sources)
+    workflow.add_node("grade_relevance", engine.grade_relevance)
+    workflow.add_node("generate", engine.generate_answer)
 
-    workflow.set_entry_point("retrieve_documents")
+    workflow.set_entry_point("retrieve")
 
-    # continue to answer only when relevance check passes
+    workflow.add_edge("retrieve", "format_sources")
+    workflow.add_edge("format_sources", "grade_relevance")
+
     workflow.add_conditional_edges(
         "grade_relevance",
         lambda state: state.get("is_relevant", False),
-        {True: "generate_answer", False: END},
+        {
+            True: "generate",
+            False: END
+        }
     )
+
+    workflow.add_edge("generate", END)
 
     return workflow.compile()
 
-helios_app = build_graph()
 
+helios_app = build_graph()

@@ -3,6 +3,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+from preprocess import preprocess_text
 
 def ingest_medical_data(data_dir="./data", persist_dir="./chroma_db"):
     """
@@ -32,10 +33,13 @@ def ingest_medical_data(data_dir="./data", persist_dir="./chroma_db"):
         print(f"Error creating data directory: {e}")
         return None
     
+    preprocess_texts = [preprocess_text(doc.page_content) for doc in documents]
+    for i, doc in enumerate(documents):
+        doc.page_content = preprocess_texts[i]
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size = 1000,
-        chunk_overlap = 200,
+        chunk_size = 1300,
+        chunk_overlap = 300,
         length_function = len,
         separators = ["\n\n", "\n", ".", "!", "?", " ", ""]
     )
