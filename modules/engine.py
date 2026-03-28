@@ -1,7 +1,6 @@
-from typing import List, TypedDict, Any
-from urllib import response
+import os
+from typing import Any, List, TypedDict
 
-from click import prompt
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
@@ -9,10 +8,11 @@ from langgraph.graph import END, StateGraph
 
 
 class Config:
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-    CHROMA_DIR = "./chroma_db"
-    LLM_MODEL = "qwen2.5:3b"
-    CHUNK_K = 6
+    EMBEDDING_MODEL = os.getenv("HELIOS_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    CHROMA_DIR = os.getenv("HELIOS_CHROMA_DIR", "./chroma_db")
+    LLM_MODEL = os.getenv("HELIOS_LLM_MODEL", "qwen2.5:3b")
+    OLLAMA_BASE_URL = os.getenv("HELIOS_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    CHUNK_K = int(os.getenv("HELIOS_CHUNK_K", "6"))
 
 
 class HELIOSState(TypedDict, total=False):
@@ -39,6 +39,7 @@ class HELIOSEngine:
 
         self.llm = OllamaLLM(
             model=Config.LLM_MODEL,
+            base_url=Config.OLLAMA_BASE_URL,
             temperature=0
         )
 
@@ -145,11 +146,19 @@ Sources:
 Answer with citations.
 """
 
-        response = self.llm.invoke(prompt)
-
-        return {
-             "generation": response
-     }
+        try:
+            response = self.llm.invoke(prompt)
+            return {"generation": response}
+        except Exception as exc:
+            error_message = (
+                f"Answer generation is temporarily unavailable because Ollama "
+                f"could not run model '{Config.LLM_MODEL}'. "
+                f"Underlying error: {exc}"
+            )
+            return {
+                "generation": error_message,
+                "trace": state.get("trace", "") + " → Generation failed"
+            }
 
 
 # -------------------------

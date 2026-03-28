@@ -37,9 +37,21 @@ async def main(message: cl.Message):
     step.input = message.content
 
     # Run HELIOS engine
-    result = await cl.make_async(helios_app.invoke)(
-        {"question": message.content}
-    )
+    try:
+        result = await cl.make_async(helios_app.invoke)(
+            {"question": message.content}
+        )
+    except Exception as exc:
+        step.output = "Documents Retrieved: 0\nIteration: 1\nRelevance Check: Failed\nConfidence Score: 0%"
+        await step.update()
+        await cl.Message(
+            content=(
+                "HELIOS could not complete the request because the local LLM backend failed.\n\n"
+                f"Error: `{exc}`\n\n"
+                "Please verify that Ollama can run the configured model and then try again."
+            )
+        ).send()
+        return
 
     generation = result.get("generation", "No answer generated.")
     docs = result.get("documents", [])
